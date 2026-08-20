@@ -28,9 +28,10 @@ class FluxCalibration(object):
 
         if calibrate_bands is None:
             calibrate_bands = [False] * len(multi_band_list)
-        if multi_band_type != "joint-linear":
+        if multi_band_type not in ("joint-linear", "joint-linear-vary-bg"):
             raise ValueError(
-                "flux calibration should only be done with join-linear data model!"
+                "flux calibration should only be done with 'joint-linear' or "
+                "'joint-linear-vary-bg' data model!"
             )
         self._calibrate_bands = calibrate_bands
         self.chain = CalibrationLikelihood(

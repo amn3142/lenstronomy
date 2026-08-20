@@ -41,6 +41,7 @@ class ModelBandPlot(ModelBand):
         band_index=0,
         fast_caustic=True,
         linear_solver=True,
+        multi_band_type=None,
     ):
         """Initialize the model-band plotting class.
 
@@ -68,6 +69,10 @@ class ModelBandPlot(ModelBand):
         :param linear_solver: If True (default) fixes the linear amplitude parameters 'amp' (avoid sampling) such
          that they get overwritten by the linear solver solution.
         :type linear_solver: bool
+        :param multi_band_type: string or None, the multi_band_type this band was built with (see ModelPlot).
+         When 'joint-linear-vary-bg', the fitted per-band background is added to
+         ``kwargs_special['bkg_amp']`` (see ModelBand).
+        :type multi_band_type: str or None
         """
         ModelBand.__init__(
             self,
@@ -81,6 +86,7 @@ class ModelBandPlot(ModelBand):
             image_likelihood_mask_list=likelihood_mask_list,
             band_index=band_index,
             linear_solver=linear_solver,
+            multi_band_type=multi_band_type,
         )
 
         self._lens_model = self._bandmodel.LensModel

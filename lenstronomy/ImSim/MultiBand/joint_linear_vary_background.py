@@ -13,8 +13,20 @@ class JointLinear_VaryBG(MultiLinear):
 
     Like JointLinear, the same surface brightness models must be called in all bands.
     Unlike JointLinear, each band has an additional free constant background parameter
-    appended to the end of the linear parameter vector. This is not compatible with
-    other lenstronomy fitting methods (e.g. FittingSequence).
+    appended to the end of the linear parameter vector.
+
+    This class is reachable through ``Util.class_creator.create_im_sim``,
+    ``Analysis.image_reconstruction.MultiBandImageReconstruction`` and
+    ``Plots.model_plot.ModelPlot`` via ``multi_band_type="joint-linear-vary-bg"``,
+    which also expose the recovered per-band backgrounds (e.g.
+    ``MultiBandImageReconstruction.background_list``, ``ModelPlot.background_list``).
+    ``FittingSequence.flux_calibration()`` (via ``Workflow.flux_calibration.FluxCalibration``)
+    also accepts this ``multi_band_type``, so per-band ``flux_scaling`` can be fit
+    jointly with the per-band background. It is also usable in the main sampling-based
+    fitting steps of FittingSequence (PSO/MCMC over the lens/light parameters):
+    ``num_param_linear`` is overridden below to include the ``N_bands`` background
+    terms, so degrees-of-freedom counting (``Likelihood.effective_num_data_points``)
+    stays correct.
 
     The returned ``param`` array has length ``N_model_params + N_bands``, where the
     last ``N_bands`` entries are the best-fit background levels for each band in the
@@ -29,10 +41,13 @@ class JointLinear_VaryBG(MultiLinear):
         constrained by all the data at once.
 
         In ground-based observing, sky transparency variations can introduce a
-        multiplicative offset between exposures. It is recommended to first fit each
-        exposure independently using ``MultiLinear`` to measure the relative image
-        amplitudes, and then pass these as ``flux_scaling`` in each band's
-        ``kwargs_data``. This corrects for transparency offsets before the joint solve.
+        multiplicative offset between exposures. ``flux_scaling`` in each band's
+        ``kwargs_data`` corrects for this before the joint solve. It can either be
+        measured ahead of time by fitting each exposure independently with
+        ``MultiLinear``, or fit directly through ``FittingSequence.flux_calibration()``
+        (``multi_band_type="joint-linear-vary-bg"`` is supported there), which
+        re-solves the joint fit -- including the per-band background -- at each trial
+        value of ``flux_scaling``.
 
     Usage::
 
@@ -63,7 +78,18 @@ class JointLinear_VaryBG(MultiLinear):
             compute_bool=compute_bool,
             likelihood_mask_list=likelihood_mask_list,
         )
-        self.type = "joint-linear"
+        self.type = "joint-linear-vary-bg"
+
+    def num_param_linear(self, kwargs_lens, kwargs_source, kwargs_lens_light, kwargs_ps):
+        """
+
+        :return: number of linear coefficients solved for, including the N_bands
+            per-band background terms appended by this class
+        """
+        num = super(JointLinear_VaryBG, self).num_param_linear(
+            kwargs_lens, kwargs_source, kwargs_lens_light, kwargs_ps
+        )
+        return num + self._num_bands
 
     def image_linear_solve(
         self,

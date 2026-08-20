@@ -2,7 +2,9 @@ __author__ = "sibirrer"
 
 import pytest
 import numpy as np
+import numpy.testing as npt
 import lenstronomy.Util.simulation_util as sim_util
+import lenstronomy.Util.image_util as image_util
 from lenstronomy.ImSim.image_model import ImageModel
 import lenstronomy.Util.param_util as param_util
 from lenstronomy.PointSource.point_source import PointSource
@@ -331,6 +333,66 @@ class TestOutputPlots(object):
         f, ax = plt.subplots(1, 1, figsize=(4, 4))
         ax = lensPlot.decomposition_plot(ax=ax)
         plt.close()
+
+    def test_joint_linear_vary_bg(self):
+        """ModelPlot built with multi_band_type='joint-linear-vary-bg' should recover
+        known per-band constant backgrounds and surface them via background_list."""
+        bg_list = [0.3, 0.7]
+
+        image_noiseless = sim_util.simulate_simple(
+            ImageModel(
+                self.data_class,
+                PSF(**self.kwargs_psf),
+                self.LensModel,
+                LightModel(
+                    light_model_list=self.kwargs_model_multiplane[
+                        "source_light_model_list"
+                    ]
+                ),
+                LightModel(
+                    light_model_list=self.kwargs_model_multiplane[
+                        "lens_light_model_list"
+                    ]
+                ),
+                PointSource(
+                    point_source_type_list=self.kwargs_model_multiplane[
+                        "point_source_model_list"
+                    ],
+                    fixed_magnification_list=[True],
+                ),
+                kwargs_numerics=self.kwargs_numerics,
+            ),
+            self.kwargs_lens,
+            self.kwargs_source,
+            self.kwargs_lens_light,
+            self.kwargs_ps,
+            no_noise=True,
+        )
+        sigma_bkg = self.kwargs_data["background_rms"]
+        exp_time = self.kwargs_data["exposure_time"]
+
+        multi_band_list = []
+        for bg in bg_list:
+            img = image_noiseless + bg
+            img_noisy = (
+                img
+                + image_util.add_poisson(img, exp_time)
+                + image_util.add_background(img, sigma_bkg)
+            )
+            kwargs_data_band = dict(self.kwargs_data, image_data=img_noisy)
+            multi_band_list.append(
+                [kwargs_data_band, self.kwargs_psf, self.kwargs_numerics]
+            )
+
+        lensPlot = ModelPlot(
+            multi_band_list,
+            self.kwargs_model_multiplane,
+            self.kwargs_params,
+            multi_band_type="joint-linear-vary-bg",
+        )
+        assert len(lensPlot.background_list) == len(bg_list)
+        for i, bg in enumerate(bg_list):
+            npt.assert_almost_equal(lensPlot.background_list[i], bg, decimal=1)
 
     def test_reconstruction_all_bands(self):
         multi_band_list = [

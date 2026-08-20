@@ -711,7 +711,9 @@ class FittingSequence(object):
         scaling_upper_limit=1000,
     ):
         """Calibrates flux_scaling between multiple images. This routine only works in
-        'join-linear' model when fluxes are meant to be identical for different bands.
+        'joint-linear' or 'joint-linear-vary-bg' model when fluxes are meant to be
+        identical for different bands (up to the calibrated flux_scaling and, for
+        'joint-linear-vary-bg', an independently-solved per-band background).
 
         :param n_particles: number of particles in the Particle Swarm Optimization
         :param n_iterations: number of iterations in the optimization process

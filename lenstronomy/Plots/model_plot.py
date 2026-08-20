@@ -56,6 +56,8 @@ class ModelPlot(object):
          Options are:
          - 'multi-linear': linear amplitudes are inferred on single data set
          - 'linear-joint': linear amplitudes ae jointly inferred
+         - 'joint-linear-vary-bg': linear amplitudes are jointly inferred, with an additional free
+           per-band constant background amplitude appended to the linear parameter vector
          - 'single-band': single band
         :type multi_band_type: str
         :param kwargs_model: model keyword arguments
@@ -137,12 +139,13 @@ class ModelPlot(object):
                 "(without degrees of freedom subtracted).",
             )
 
+        self._multi_band_type = multi_band_type
         self._band_plot_list = []
         self._index_list = []
         index = 0
         for i in range(len(multi_band_list)):
             if bands_compute[i] is True:
-                if multi_band_type == "joint-linear":
+                if multi_band_type in ("joint-linear", "joint-linear-vary-bg"):
                     param_i = param
                     cov_param_i = cov_param
                 else:
@@ -161,6 +164,7 @@ class ModelPlot(object):
                     band_index=i,
                     fast_caustic=fast_caustic,
                     linear_solver=linear_solver,
+                    multi_band_type=multi_band_type,
                 )
 
                 self._band_plot_list.append(bandplot)
@@ -202,6 +206,28 @@ class ModelPlot(object):
         self._font_size = font_size
         for band_plot in self._band_plot_list:
             band_plot.font_size = font_size
+
+    @property
+    def background_list(self):
+        """List of best-fit per-band constant backgrounds, in ``multi_band_list``
+        order (``None`` for bands not in ``bands_compute``). Only populated when
+        built with ``multi_band_type='joint-linear-vary-bg'``, otherwise ``None``.
+
+        :return: list or None
+        """
+        if self._multi_band_type != "joint-linear-vary-bg":
+            return None
+        background_list = []
+        for i in self._index_list:
+            if i == -1:
+                background_list.append(None)
+            else:
+                background_list.append(
+                    self._band_plot_list[int(i)].kwargs_model["kwargs_special"][
+                        "bkg_amp"
+                    ]
+                )
+        return background_list
 
     def _select_band(self, band_index):
         """Select a computed imaging band for plotting.

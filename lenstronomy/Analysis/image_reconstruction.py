@@ -42,11 +42,18 @@ class MultiBandImageReconstruction(object):
          Options are:
          - 'multi-linear': linear amplitudes are inferred on single data set
          - 'linear-joint': linear amplitudes ae jointly inferred
+         - 'joint-linear-vary-bg': linear amplitudes are jointly inferred, with an additional free
+           per-band constant background amplitude appended to the linear parameter vector
          - 'single-band': single band
         :param kwargs_likelihood: likelihood keyword arguments as supported by the Likelihood() class
         :param verbose: if True (default), computes and prints the total log-likelihood.
          This option can be deactivated for speedup purposes (does not run linear inversion again), and reduces the
          number of prints.
+
+        When ``multi_band_type='joint-linear-vary-bg'``, the recovered per-band backgrounds are also
+        available afterwards as ``self.background_list`` (list, same order/length as ``multi_band_list``,
+        ``None`` for bands not in ``bands_compute``), and on each ``ModelBand`` via
+        ``model_band.kwargs_model['kwargs_special']['bkg_amp']``.
         """
         # here we retrieve those settings in the likelihood keyword arguments that are relevant for the image
         # reconstruction
@@ -93,7 +100,7 @@ class MultiBandImageReconstruction(object):
         self.model_band_list = []
         for i in range(len(multi_band_list)):
             if bands_compute[i] is True:
-                if multi_band_type == "joint-linear":
+                if multi_band_type in ("joint-linear", "joint-linear-vary-bg"):
                     param_i = param
                     cov_param_i = cov_param
                 else:
@@ -111,10 +118,23 @@ class MultiBandImageReconstruction(object):
                     image_likelihood_mask_list=image_likelihood_mask_list,
                     band_index=i,
                     verbose=verbose,
+                    multi_band_type=multi_band_type,
                 )
                 self.model_band_list.append(model_band)
             else:
                 self.model_band_list.append(None)
+
+        if multi_band_type == "joint-linear-vary-bg":
+            self.background_list = [
+                (
+                    model_band.kwargs_model["kwargs_special"]["bkg_amp"]
+                    if model_band is not None
+                    else None
+                )
+                for model_band in self.model_band_list
+            ]
+        else:
+            self.background_list = None
 
         # add back the unchanged tracer_source arguments
         kwargs_params["kwargs_tracer_source"] = kwargs_tracer_source_temp
@@ -156,6 +176,7 @@ class ModelBand(object):
         band_index=0,
         verbose=True,
         linear_solver=True,
+        multi_band_type=None,
     ):
         """
 
@@ -173,6 +194,10 @@ class ModelBand(object):
         :param verbose: if True (default), prints the reduced chi2 value for the current band.
         :param linear_solver: bool, if True (default) fixes the linear amplitude parameters 'amp' (avoid sampling) such
          that they get overwritten by the linear solver solution.
+        :param multi_band_type: string or None, the multi_band_type this ModelBand was built with (see
+         MultiBandImageReconstruction). When 'joint-linear-vary-bg', the trailing per-band background entry
+         of ``param`` is extracted and added to ``kwargs_special['bkg_amp']``, alongside the other linear
+         amplitudes solved for this band (available through the ``kwargs_model`` property).
         """
 
         self._bandmodel = SingleBandMultiModel(
@@ -182,10 +207,10 @@ class ModelBand(object):
             band_index=band_index,
             linear_solver=linear_solver,
         )
-        self._kwargs_special_partial = kwargs_params.get("kwargs_special", None)
         self._kwargs_lens = kwargs_params.get("kwargs_lens", None)
         kwargs_params_copy = copy.deepcopy(kwargs_params)
         kwargs_params_copy.pop("kwargs_tracer_source", None)
+        self._kwargs_special_partial = kwargs_params_copy.get("kwargs_special", None)
         (
             kwargs_lens_partial,
             kwargs_source_partial,
@@ -217,6 +242,12 @@ class ModelBand(object):
         self._cov_param = cov_param
         self._param = param
         self._error_map = error_map
+        if multi_band_type == "joint-linear-vary-bg":
+            if self._kwargs_special_partial is None:
+                self._kwargs_special_partial = {}
+            self._kwargs_special_partial["bkg_amp"] = param[
+                len(param) - len(multi_band_list) + band_index
+            ]
 
     @property
     def model(self):

@@ -143,6 +143,17 @@ class TestJointLinear_VaryBG(object):
         self.num_joint_params = 3
         self.num_params_total = self.num_joint_params + self.num_bands
 
+    def test_num_param_linear(self):
+        """num_param_linear should include the N_bands background terms, on top of
+        the per-band linear counts inherited from MultiLinear, so that
+        Likelihood.effective_num_data_points() stays correct when used through
+        ImageLikelihood/FittingSequence."""
+        num_param_linear = self.imageModel.num_param_linear(
+            self.kwargs_lens, self.kwargs_source, self.kwargs_lens_light, self.kwargs_ps
+        )
+        # 3 params/band (source + lens light + point source) * 2 bands + 2 backgrounds
+        assert num_param_linear == self.num_joint_params * self.num_bands + self.num_bands
+
     def test_linear_response(self):
         """Response matrix should have one extra row per band compared to
         JointLinear."""

@@ -367,6 +367,8 @@ def create_im_sim(
     :param multi_band_type: string, option when having multiple imaging data sets modelled simultaneously. Options are:
      - 'multi-linear': linear amplitudes are inferred on single data set
      - 'linear-joint': linear amplitudes ae jointly inferred
+     - 'joint-linear-vary-bg': linear amplitudes are jointly inferred, with an additional free
+       per-band constant background amplitude appended to the linear parameter vector
      - 'single-band': single band
     :param kwargs_model: model keyword arguments
     :param bands_compute: (optional), bool list to indicate which band to be included in the modeling
@@ -401,6 +403,17 @@ def create_im_sim(
         from lenstronomy.ImSim.MultiBand.joint_linear import JointLinear
 
         multiband = JointLinear(
+            multi_band_list,
+            kwargs_model,
+            compute_bool=bands_compute,
+            likelihood_mask_list=image_likelihood_mask_list,
+        )
+    elif multi_band_type == "joint-linear-vary-bg":
+        from lenstronomy.ImSim.MultiBand.joint_linear_vary_background import (
+            JointLinear_VaryBG,
+        )
+
+        multiband = JointLinear_VaryBG(
             multi_band_list,
             kwargs_model,
             compute_bool=bands_compute,

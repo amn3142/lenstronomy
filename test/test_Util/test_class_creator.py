@@ -242,6 +242,17 @@ class TestClassCreator(object):
             band_index=0,
         )
         assert multi_band._image_model_list[0].LensModel.lens_model_list[0] == "SIS"
+        multi_band_type = "joint-linear-vary-bg"
+        multi_band = class_creator.create_im_sim(
+            multi_band_list,
+            multi_band_type,
+            kwargs_model,
+            bands_compute=None,
+            image_likelihood_mask_list=None,
+            band_index=0,
+        )
+        assert multi_band._image_model_list[0].LensModel.lens_model_list[0] == "SIS"
+        assert multi_band.type == "joint-linear-vary-bg"
         multi_band_type = "single-band"
         multi_band = class_creator.create_im_sim(
             multi_band_list,

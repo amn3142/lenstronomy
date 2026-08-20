@@ -5,6 +5,7 @@ import numpy as np
 import numpy.testing as npt
 import unittest
 import lenstronomy.Util.simulation_util as sim_util
+import lenstronomy.Util.image_util as image_util
 from lenstronomy.ImSim.image_model import ImageModel
 import lenstronomy.Util.param_util as param_util
 from lenstronomy.PointSource.point_source import PointSource
@@ -183,6 +184,71 @@ class TestMultiBandImageReconstruction(object):
 
         bool = check_solver_error(image=np.array([0, 0.1]))
         assert bool == 0
+
+    def test_joint_linear_vary_bg(self):
+        """Test that MultiBandImageReconstruction, built with
+        multi_band_type='joint-linear-vary-bg', recovers known per-band constant
+        backgrounds injected into simulated data and surfaces them via
+        background_list / ModelBand.kwargs_model['kwargs_special']['bkg_amp']."""
+        num_bands = 2
+        bg_list = [0.3, 0.7]
+
+        image_noiseless = sim_util.simulate_simple(
+            ImageModel(
+                self.data_class,
+                PSF(**self.kwargs_psf),
+                self.LensModel,
+                LightModel(light_model_list=self.kwargs_model["source_light_model_list"]),
+                LightModel(
+                    light_model_list=self.kwargs_model["lens_light_model_list"]
+                ),
+                PointSource(
+                    point_source_type_list=self.kwargs_model[
+                        "point_source_model_list"
+                    ],
+                    fixed_magnification_list=[True],
+                ),
+                kwargs_numerics=self.kwargs_numerics,
+            ),
+            self.kwargs_lens,
+            self.kwargs_source,
+            self.kwargs_lens_light,
+            self.kwargs_ps,
+            no_noise=True,
+        )
+        sigma_bkg = self.kwargs_data["background_rms"]
+        exp_time = self.kwargs_data["exposure_time"]
+
+        multi_band_list = []
+        for bg in bg_list:
+            img = image_noiseless + bg
+            img_noisy = (
+                img
+                + image_util.add_poisson(img, exp_time)
+                + image_util.add_background(img, sigma_bkg)
+            )
+            kwargs_data_band = dict(self.kwargs_data, image_data=img_noisy)
+            multi_band_list.append(
+                [kwargs_data_band, self.kwargs_psf, self.kwargs_numerics]
+            )
+
+        multi_band = MultiBandImageReconstruction(
+            multi_band_list,
+            self.kwargs_model,
+            self.kwargs_params,
+            multi_band_type="joint-linear-vary-bg",
+        )
+        assert len(multi_band.background_list) == num_bands
+        for i in range(num_bands):
+            npt.assert_almost_equal(
+                multi_band.background_list[i], bg_list[i], decimal=1
+            )
+            npt.assert_almost_equal(
+                multi_band.model_band_list[i].kwargs_model["kwargs_special"][
+                    "bkg_amp"
+                ],
+                multi_band.background_list[i],
+            )
 
     def test_point_source_residuals(self):
         multi_band_list = [[self.kwargs_data, self.kwargs_psf, self.kwargs_numerics]]
