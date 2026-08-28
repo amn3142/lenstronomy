@@ -3,12 +3,10 @@ import lenstronomy.Util.util as util
 import lenstronomy.Util.image_util as image_util
 import lenstronomy.Util.kernel_util as kernel_util
 import lenstronomy.Util.mask_util as mask_util
-from lenstronomy.Sampling.Pool.pool import choose_pool
-from lenstronomy.Sampling.Samplers.pso import ParticleSwarmOptimizer
-
 import numpy as np
 import copy
 from scipy import ndimage
+from scipy.optimize import minimize
 import warnings
 
 __all__ = ["PsfFitting"]
@@ -184,7 +182,7 @@ class PsfFitting(object):
         use_starred=False,
         kwargs_starred=None,
         mask_starred=None,
-        kwargs_psf_pso=None,
+        kwargs_psf_optimizer=None,
     ):
         """
 
@@ -228,17 +226,20 @@ class PsfFitting(object):
          For supersampled PSFs, the original (pre-supersampling) size should be used.
          Each mask is applied to exclude contamination from other point sources when estimating the PSF,
          ensuring that each PSF kernel is reconstructed using only its corresponding source, respectively.
-        :param kwargs_psf_pso: dictionary, keyword arguments for the particle swarm optimization used to fit an
-         ANALYTIC PSF's shape parameters (ignored for PIXEL PSFs). Options: 'n_particles', 'n_iterations',
-         'threadCount', 'mpi', 'kwargs_lower', 'kwargs_upper' (per-name override of the psf_model's default bounds),
-         'verbose'. Example: kwargs_psf_pso = {'n_particles': 30, 'n_iterations': 100}
+        :param kwargs_psf_optimizer: dictionary, keyword arguments for the bounded scipy.optimize.minimize call used
+         to fit an ANALYTIC PSF's shape parameters (ignored for PIXEL PSFs). Options: 'method' (must support bounds,
+         default 'Powell' -- a derivative-free choice, since gradient-based methods like 'L-BFGS-B' can be misled by
+         the noisy/non-smooth likelihood near a pixel-scale-limited PSF core and get stuck against a bound),
+         'kwargs_lower', 'kwargs_upper' (per-name override of the psf_model's default bounds), 'verbose'; any other
+         entry is passed through to scipy.optimize.minimize (e.g. 'options').
+         Example: kwargs_psf_optimizer = {'method': 'Nelder-Mead'}
 
         :return: kwargs_psf_new, logL_after, error_map
         """
         psf_class = PSF(**kwargs_psf)
         if psf_class.psf_type == "ANALYTIC":
             return self._update_psf_analytic(
-                kwargs_psf, kwargs_params, **(kwargs_psf_pso or {})
+                kwargs_psf, kwargs_params, **(kwargs_psf_optimizer or {})
             )
         if block_center_neighbour_error_map is None:
             block_center_neighbour_error_map = block_center_neighbour
@@ -510,33 +511,39 @@ class PsfFitting(object):
         self,
         kwargs_psf,
         kwargs_params,
-        n_particles=10,
-        n_iterations=10,
-        threadCount=1,
-        mpi=False,
+        method="Powell",
         kwargs_lower=None,
         kwargs_upper=None,
         verbose=True,
+        **kwargs_minimize
     ):
-        """Fits an ANALYTIC PSF's shape parameters via a standalone particle swarm
-        optimization, holding all other model parameters (given in kwargs_params) fixed
-        at their current values. Mirrors Workflow.flux_calibration.FluxCalibration's use
-        of ParticleSwarmOptimizer.
+        """Fits an ANALYTIC PSF's shape parameters via a bounded scipy.optimize.minimize
+        call, holding all other model parameters (given in kwargs_params) fixed at
+        their current values. Uses a bounded local optimizer rather than a particle
+        swarm so the shape parameters' bounds are enforced exactly throughout the
+        search, not just as the initial sampling range (the PSO in
+        Sampling.Samplers.pso does not clip particle positions back into bounds after
+        the initial swarm, so it can wander into equivalent-but-out-of-range regions,
+        e.g. the fwhm_halo sign flip found while validating the aopsf mock test).
 
         :param kwargs_psf: keyword arguments used to construct the PSF() class; must
             have psf_type == "ANALYTIC" and contain 'psf_model', 'kernel_num_pix', and
             'kwargs_psf_analytic_init'
         :param kwargs_params: keyword arguments of the (fixed) parameters of the model
             components (e.g. 'kwargs_lens' etc)
-        :param n_particles: number of particles in the PSO
-        :param n_iterations: number of iterations of the PSO
-        :param threadCount: number of threads
-        :param mpi: boolean, MPI mode
+        :param method: str, scipy.optimize.minimize method name; must support bounds.
+            Default 'Powell' is derivative-free, which matters here: gradient-based
+            methods (e.g. 'L-BFGS-B', 'TNC') estimate gradients by finite differences,
+            and the AO PSF core FWHM can be comparable to the pixel scale, making the
+            likelihood noisy/non-smooth enough in that parameter to mislead a gradient
+            estimate into a bound. 'Nelder-Mead' is another derivative-free option.
         :param kwargs_lower: dict, optional per-name override of
             psf_model.lower_limit_default
         :param kwargs_upper: dict, optional per-name override of
             psf_model.upper_limit_default
-        :param verbose: bool, if True prints PSO progress
+        :param verbose: bool, if True prints the optimizer's convergence message
+        :param kwargs_minimize: additional keyword arguments passed through to
+            scipy.optimize.minimize (e.g. options={'maxiter': 200})
         :return: kwargs_psf_new, logL_after, error_map
         """
         psf_model = kwargs_psf["psf_model"]
@@ -557,7 +564,7 @@ class PsfFitting(object):
         _kwargs_params = copy.deepcopy(kwargs_params)
         _kwargs_params.pop("kwargs_tracer_source", None)
 
-        def _logL(args):
+        def _neg_logL(args):
             kwargs_psf_analytic = dict(zip(param_names, args))
             trial_psf = PSF(
                 psf_type="ANALYTIC",
@@ -570,7 +577,7 @@ class PsfFitting(object):
             logL, _ = self._image_model_class.likelihood_data_given_model(
                 **_kwargs_params
             )
-            return logL
+            return -logL
 
         kwargs_psf_analytic_init = kwargs_psf.get("kwargs_psf_analytic_init", {})
         init_pos = [
@@ -578,21 +585,27 @@ class PsfFitting(object):
             for name, lo, hi in zip(param_names, lower_limit, upper_limit)
         ]
 
-        pool = choose_pool(mpi=mpi, processes=threadCount)
-        pso = ParticleSwarmOptimizer(
-            _logL, lower_limit, upper_limit, n_particles, pool=pool
+        result = minimize(
+            _neg_logL,
+            init_pos,
+            method=method,
+            bounds=list(zip(lower_limit, upper_limit)),
+            **kwargs_minimize
         )
-        pso.set_global_best(init_pos, [0] * len(init_pos), _logL(init_pos))
-        result, _ = pso.optimize(n_iterations, verbose=verbose)
+        if verbose:
+            print(
+                "PSF analytic shape fit (%s): success=%s, %s"
+                % (method, result.success, result.message)
+            )
 
-        kwargs_psf_analytic_best = dict(zip(param_names, result))
+        kwargs_psf_analytic_best = dict(zip(param_names, result.x))
         kwargs_psf_new = {
             "psf_type": "ANALYTIC",
             "psf_model": psf_model,
             "kernel_num_pix": kernel_num_pix,
             "kwargs_psf_analytic_init": kwargs_psf_analytic_best,
         }
-        logL_after = _logL(result)
+        logL_after = -_neg_logL(result.x)
         error_map = np.zeros((kernel_num_pix, kernel_num_pix))
         return kwargs_psf_new, logL_after, error_map
 

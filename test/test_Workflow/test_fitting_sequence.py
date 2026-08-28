@@ -991,7 +991,7 @@ class TestFittingSequenceAnalyticPsfIteration(object):
         )
         kwargs_psf_iter = {
             "num_iter": 1,
-            "kwargs_psf_pso": {"n_particles": 20, "n_iterations": 40, "verbose": False},
+            "kwargs_psf_optimizer": {"verbose": False},
         }
         fitting_list = [["psf_iteration", kwargs_psf_iter]]
         fittingSequence.fit_sequence(fitting_list)

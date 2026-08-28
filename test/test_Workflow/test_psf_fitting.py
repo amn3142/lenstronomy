@@ -631,7 +631,7 @@ class TestAnalyticPSFFitting(object):
         kwargs_psf_new, logL_after, error_map = self.psf_fitting.update_psf(
             self.kwargs_psf_wrong,
             self.kwargs_params,
-            kwargs_psf_pso={"n_particles": 20, "n_iterations": 40, "verbose": False},
+            kwargs_psf_optimizer={"verbose": False},
         )
         assert kwargs_psf_new["psf_type"] == "ANALYTIC"
         assert kwargs_psf_new["psf_model"] is AO_PSF_MODEL
@@ -647,7 +647,7 @@ class TestAnalyticPSFFitting(object):
             kwargs_params=self.kwargs_params,
             num_iter=1,
             verbose=False,
-            kwargs_psf_pso={"n_particles": 20, "n_iterations": 40, "verbose": False},
+            kwargs_psf_optimizer={"verbose": False},
         )
         assert kwargs_psf_final["psf_type"] == "ANALYTIC"
         # PIXEL-specific bookkeeping keys should not leak into an ANALYTIC result
