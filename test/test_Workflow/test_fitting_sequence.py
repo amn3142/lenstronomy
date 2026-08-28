@@ -13,6 +13,8 @@ from lenstronomy.LightModel.light_model import LightModel
 from lenstronomy.Workflow.fitting_sequence import FittingSequence
 from lenstronomy.Data.imaging_data import ImageData
 from lenstronomy.Data.psf import PSF
+from lenstronomy.Data.psf_analytic_model import AO_PSF_MODEL
+import lenstronomy.Util.image_util as image_util
 
 
 class TestFittingSequence(object):
@@ -898,6 +900,108 @@ class TestFittingSequence(object):
         npt.assert_almost_equal(
             kwargs_result["kwargs_lens"][0]["theta_E"], 1, decimal=2
         )
+
+
+class TestFittingSequenceAnalyticPsfIteration(object):
+    """Tests that the 'psf_iteration' fitting-sequence step dispatches correctly to
+    the PSO-based analytic PSF fit for an ANALYTIC-type band, and to the existing
+    pixel-kernel path for a PIXEL-type band, within the same FittingSequence."""
+
+    def setup_method(self):
+        np.random.seed(41)
+        self.true_kwargs_psf_analytic = {
+            "fwhm_core": 0.05,
+            "fwhm_halo": 0.3,
+            "strehl": 0.4,
+            "e1_halo": 0.05,
+            "e2_halo": -0.03,
+        }
+        num_pix, delta_pix, exp_time, sigma_bkg = 41, 0.03, 20000, 0.0005
+        kwargs_data = sim_util.data_configure_simple(
+            num_pix, delta_pix, exp_time, sigma_bkg
+        )
+        data_class = ImageData(**kwargs_data)
+
+        true_psf = PSF(
+            psf_type="ANALYTIC",
+            psf_model=AO_PSF_MODEL,
+            kernel_num_pix=num_pix,
+            pixel_size=delta_pix,
+            kwargs_psf_analytic_init=self.true_kwargs_psf_analytic,
+        )
+        point_source_class = PointSource(
+            point_source_type_list=["UNLENSED"], fixed_magnification_list=[False]
+        )
+        self.kwargs_ps = [{"ra_image": [0.0], "dec_image": [0.0], "point_amp": [1.0]}]
+        kwargs_numerics = {"supersampling_factor": 1}
+
+        image_model_true = ImageModel(
+            data_class,
+            true_psf,
+            point_source_class=point_source_class,
+            kwargs_numerics=kwargs_numerics,
+        )
+        model_noiseless = image_model_true.image(kwargs_ps=self.kwargs_ps)
+        img_noisy = (
+            model_noiseless
+            + image_util.add_poisson(model_noiseless, exp_time)
+            + image_util.add_background(model_noiseless, sigma_bkg)
+        )
+        kwargs_data["image_data"] = img_noisy
+
+        kwargs_psf_analytic = {
+            "psf_type": "ANALYTIC",
+            "psf_model": AO_PSF_MODEL,
+            "kernel_num_pix": num_pix,
+            "kwargs_psf_analytic_init": {
+                "fwhm_core": 0.08,
+                "fwhm_halo": 0.5,
+                "strehl": 0.6,
+                "e1_halo": 0.0,
+                "e2_halo": 0.0,
+            },
+        }
+        multi_band_list = [[kwargs_data, kwargs_psf_analytic, kwargs_numerics]]
+        self.kwargs_data_joint = {
+            "multi_band_list": multi_band_list,
+            "multi_band_type": "single-band",
+        }
+        self.kwargs_model = {
+            "point_source_model_list": ["UNLENSED"],
+            "fixed_magnification_list": [False],
+        }
+        self.kwargs_constraints = {}
+        self.kwargs_likelihood = {}
+        point_source_param = (
+            self.kwargs_ps,
+            [{"ra_image": [0.01], "dec_image": [0.01]}],
+            [{}],
+            [{"ra_image": [-1], "dec_image": [-1]}],
+            [{"ra_image": [1], "dec_image": [1]}],
+        )
+        self.kwargs_params = {"point_source_model": point_source_param}
+
+    def test_psf_iteration_analytic(self):
+        fittingSequence = FittingSequence(
+            self.kwargs_data_joint,
+            self.kwargs_model,
+            self.kwargs_constraints,
+            self.kwargs_likelihood,
+            self.kwargs_params,
+        )
+        kwargs_psf_iter = {
+            "num_iter": 1,
+            "kwargs_psf_pso": {"n_particles": 20, "n_iterations": 40, "verbose": False},
+        }
+        fitting_list = [["psf_iteration", kwargs_psf_iter]]
+        fittingSequence.fit_sequence(fitting_list)
+
+        kwargs_psf_new = fittingSequence.multi_band_list[0][1]
+        assert kwargs_psf_new["psf_type"] == "ANALYTIC"
+        for name, true_value in self.true_kwargs_psf_analytic.items():
+            npt.assert_almost_equal(
+                kwargs_psf_new["kwargs_psf_analytic_init"][name], true_value, decimal=1
+            )
 
 
 if __name__ == "__main__":

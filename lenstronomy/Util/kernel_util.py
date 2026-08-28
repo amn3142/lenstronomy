@@ -5,7 +5,7 @@ import copy
 from scipy import ndimage
 import lenstronomy.Util.util as util
 import lenstronomy.Util.image_util as image_util
-from lenstronomy.LightModel.Profiles.gaussian import Gaussian
+from lenstronomy.LightModel.Profiles.gaussian import Gaussian, GaussianEllipse
 from lenstronomy.LightModel.Profiles.moffat import Moffat
 import lenstronomy.Util.multi_gauss_expansion as mge
 from lenstronomy.GalKin import velocity_util
@@ -335,6 +335,58 @@ def kernel_gaussian(num_pix, delta_pix, fwhm):
     kernel = kernel_gaussian_grid(x_grid, y_grid, sigma)
     kernel = util.array2image(kernel)
     return kernel
+
+
+@export
+def ao_psf_kernel(
+    num_pix,
+    delta_pix,
+    fwhm_core,
+    fwhm_halo,
+    strehl,
+    e1_halo,
+    e2_halo,
+    center_x=0.0,
+    center_y=0.0,
+):
+    """Adaptive-optics PSF kernel: a diffraction-limited core (circular Gaussian
+    approximation) plus an elliptical seeing halo (elliptical Gaussian), combined via a
+    Strehl-like flux-mixing weight. Each component is individually normalized to unit
+    flux before mixing, so 'strehl' is the fraction of total flux in the core, not the
+    textbook peak-intensity-ratio definition of Strehl ratio.
+
+    :param num_pix: number of pixels (odd)
+    :param delta_pix: pixel scale
+    :param fwhm_core: full width at half maximum of the (circular) diffraction-limited
+        core
+    :param fwhm_halo: full width at half maximum of the elliptical seeing halo
+    :param strehl: core flux fraction in [0, 1]
+    :param e1_halo: eccentricity modulus of the seeing halo
+    :param e2_halo: eccentricity modulus of the seeing halo
+    :param center_x: x-offset of the kernel center
+    :param center_y: y-offset of the kernel center
+    :return: 2d kernel, normalized to unit sum
+    """
+    x_grid, y_grid = util.make_grid(num_pix, delta_pix)
+    sigma_core = util.fwhm2sigma(fwhm_core)
+    sigma_halo = util.fwhm2sigma(fwhm_halo)
+    core = Gaussian().function(
+        x_grid, y_grid, amp=1.0, sigma=sigma_core, center_x=center_x, center_y=center_y
+    )
+    halo = GaussianEllipse().function(
+        x_grid,
+        y_grid,
+        amp=1.0,
+        sigma=sigma_halo,
+        e1=e1_halo,
+        e2=e2_halo,
+        center_x=center_x,
+        center_y=center_y,
+    )
+    core = core / np.sum(core)
+    halo = halo / np.sum(halo)
+    kernel = strehl * core + (1 - strehl) * halo
+    return util.array2image(kernel)
 
 
 @export

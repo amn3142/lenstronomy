@@ -104,7 +104,7 @@ class Numerics(PointSourceRendering):
                 supersampling_factor,
                 flux_evaluate_indexes,
             )
-        if self._psf_type == "PIXEL":
+        if self._psf_type in ("PIXEL", "ANALYTIC"):
             if compute_mode == "adaptive" and supersampling_convolution is True:
                 from lenstronomy.ImSim.Numerics.adaptive_numerics import (
                     AdaptiveConvolution,
@@ -177,7 +177,7 @@ class Numerics(PointSourceRendering):
             self._conv = None
         else:
             raise ValueError(
-                "psf_type %s not valid! Chose either NONE, GAUSSIAN or PIXEL."
+                "psf_type %s not valid! Chose either NONE, GAUSSIAN, PIXEL or ANALYTIC."
                 % self._psf_type
             )
         super(Numerics, self).__init__(

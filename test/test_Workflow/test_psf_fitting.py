@@ -2,6 +2,7 @@ __author__ = "sibirrer"
 
 import pytest
 import numpy as np
+import numpy.testing as npt
 import copy
 import lenstronomy.Util.util as util
 import lenstronomy.Util.simulation_util as sim_util
@@ -14,6 +15,9 @@ from lenstronomy.LightModel.light_model import LightModel
 from lenstronomy.Workflow.psf_fitting import PsfFitting
 from lenstronomy.Data.imaging_data import ImageData
 from lenstronomy.Data.psf import PSF
+from lenstronomy.Data.psf_analytic_model import AO_PSF_MODEL
+from lenstronomy.ImSim.MultiBand.single_band_multi_model import SingleBandMultiModel
+import lenstronomy.Util.image_util as image_util
 
 
 class TestPSFIteration(object):
@@ -551,6 +555,108 @@ class TestPSFIterationOld(object):
         diff_new = np.sum((kernel_new - kernel_true) ** 2)
         assert diff_old > diff_new
         assert diff_new < 0.01
+
+
+class TestAnalyticPSFFitting(object):
+    """Tests the PSO-based analytic PSF fitting branch of PsfFitting.update_psf /
+    update_iterative, dispatched via psf_type == 'ANALYTIC'."""
+
+    def setup_method(self):
+        np.random.seed(41)
+        self.true_kwargs_psf_analytic = {
+            "fwhm_core": 0.05,
+            "fwhm_halo": 0.3,
+            "strehl": 0.4,
+            "e1_halo": 0.05,
+            "e2_halo": -0.03,
+        }
+        num_pix, delta_pix, exp_time, sigma_bkg = 41, 0.03, 20000, 0.0005
+        kwargs_data = sim_util.data_configure_simple(
+            num_pix, delta_pix, exp_time, sigma_bkg
+        )
+        data_class = ImageData(**kwargs_data)
+
+        true_psf = PSF(
+            psf_type="ANALYTIC",
+            psf_model=AO_PSF_MODEL,
+            kernel_num_pix=num_pix,
+            pixel_size=delta_pix,
+            kwargs_psf_analytic_init=self.true_kwargs_psf_analytic,
+        )
+        point_source_class = PointSource(
+            point_source_type_list=["UNLENSED"], fixed_magnification_list=[False]
+        )
+        self.kwargs_ps = [{"ra_image": [0.0], "dec_image": [0.0], "point_amp": [1.0]}]
+        kwargs_numerics = {"supersampling_factor": 1}
+
+        image_model_true = ImageModel(
+            data_class,
+            true_psf,
+            point_source_class=point_source_class,
+            kwargs_numerics=kwargs_numerics,
+        )
+        model_noiseless = image_model_true.image(kwargs_ps=self.kwargs_ps)
+        img_noisy = (
+            model_noiseless
+            + image_util.add_poisson(model_noiseless, exp_time)
+            + image_util.add_background(model_noiseless, sigma_bkg)
+        )
+        kwargs_data["image_data"] = img_noisy
+
+        self.wrong_kwargs_psf_analytic_init = {
+            "fwhm_core": 0.08,
+            "fwhm_halo": 0.5,
+            "strehl": 0.6,
+            "e1_halo": 0.0,
+            "e2_halo": 0.0,
+        }
+        self.kwargs_psf_wrong = {
+            "psf_type": "ANALYTIC",
+            "psf_model": AO_PSF_MODEL,
+            "kernel_num_pix": num_pix,
+            "kwargs_psf_analytic_init": self.wrong_kwargs_psf_analytic_init,
+        }
+        multi_band_list = [[kwargs_data, self.kwargs_psf_wrong, kwargs_numerics]]
+        kwargs_model = {
+            "point_source_model_list": ["UNLENSED"],
+            "fixed_magnification_list": [False],
+        }
+        self.image_model = SingleBandMultiModel(
+            multi_band_list, kwargs_model, band_index=0
+        )
+        self.kwargs_params = {"kwargs_ps": self.kwargs_ps}
+        self.psf_fitting = PsfFitting(image_model_class=self.image_model)
+
+    def test_update_psf_analytic(self):
+        kwargs_psf_new, logL_after, error_map = self.psf_fitting.update_psf(
+            self.kwargs_psf_wrong,
+            self.kwargs_params,
+            kwargs_psf_pso={"n_particles": 20, "n_iterations": 40, "verbose": False},
+        )
+        assert kwargs_psf_new["psf_type"] == "ANALYTIC"
+        assert kwargs_psf_new["psf_model"] is AO_PSF_MODEL
+        for name, true_value in self.true_kwargs_psf_analytic.items():
+            npt.assert_almost_equal(
+                kwargs_psf_new["kwargs_psf_analytic_init"][name], true_value, decimal=1
+            )
+        assert np.isfinite(logL_after)
+
+    def test_update_iterative_analytic(self):
+        kwargs_psf_final = self.psf_fitting.update_iterative(
+            self.kwargs_psf_wrong,
+            kwargs_params=self.kwargs_params,
+            num_iter=1,
+            verbose=False,
+            kwargs_psf_pso={"n_particles": 20, "n_iterations": 40, "verbose": False},
+        )
+        assert kwargs_psf_final["psf_type"] == "ANALYTIC"
+        # PIXEL-specific bookkeeping keys should not leak into an ANALYTIC result
+        assert "psf_variance_map" not in kwargs_psf_final
+        assert "kernel_point_source_init" not in kwargs_psf_final
+        for name, true_value in self.true_kwargs_psf_analytic.items():
+            npt.assert_almost_equal(
+                kwargs_psf_final["kwargs_psf_analytic_init"][name], true_value, decimal=1
+            )
 
 
 if __name__ == "__main__":

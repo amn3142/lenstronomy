@@ -5,6 +5,7 @@ import unittest
 import warnings
 
 from lenstronomy.Data.psf import PSF
+from lenstronomy.Data.psf_analytic_model import AnalyticPSFModel, AO_PSF_MODEL
 import lenstronomy.Util.kernel_util as kernel_util
 import lenstronomy.Util.image_util as image_util
 
@@ -351,6 +352,102 @@ class TestData(object):
         npt.assert_almost_equal(
             np.sum(psf.kernel_point_source_supersampled(supersampling_factor=5)), 1
         )
+
+
+class TestAnalyticPSF(object):
+    def setup_method(self):
+        self.delta_pix = 0.05
+        self.kernel_num_pix = 21
+        # minimal test psf_model wrapping the existing kernel_gaussian, to exercise the
+        # ANALYTIC machinery generically without depending on the AO example
+        self.psf_model = AnalyticPSFModel(
+            function=kernel_util.kernel_gaussian,
+            param_names=["fwhm"],
+            lower_limit_default={"fwhm": 0.01},
+            upper_limit_default={"fwhm": 1.0},
+        )
+        self.kwargs_analytic = {
+            "psf_type": "ANALYTIC",
+            "psf_model": self.psf_model,
+            "kernel_num_pix": self.kernel_num_pix,
+            "pixel_size": self.delta_pix,
+            "kwargs_psf_analytic_init": {"fwhm": 0.2},
+        }
+        self.psf_analytic = PSF(**self.kwargs_analytic)
+
+    def test_kernel_point_source(self):
+        kernel = self.psf_analytic.kernel_point_source
+        assert len(kernel) == self.kernel_num_pix
+        npt.assert_almost_equal(np.sum(kernel), 1, decimal=6)
+
+        kernel_gaussian_direct = kernel_util.kernel_gaussian(
+            self.kernel_num_pix, self.delta_pix, 0.2
+        )
+        npt.assert_array_almost_equal(
+            kernel, kernel_gaussian_direct / np.sum(kernel_gaussian_direct)
+        )
+
+    def test_kernel_point_source_supersampled(self):
+        kernel_super = self.psf_analytic.kernel_point_source_supersampled(
+            supersampling_factor=3
+        )
+        npt.assert_almost_equal(np.sum(kernel_super), 1, decimal=6)
+        assert kernel_super.shape[0] % 2 == 1
+
+        # supersampling_factor=1 should just return kernel_point_source
+        kernel_1 = self.psf_analytic.kernel_point_source_supersampled(
+            supersampling_factor=1
+        )
+        npt.assert_array_almost_equal(kernel_1, self.psf_analytic.kernel_point_source)
+
+    def test_set_pixel_size_invalidates_cache(self):
+        kernel_before = self.psf_analytic.kernel_point_source
+        self.psf_analytic.set_pixel_size(self.delta_pix / 2)
+        kernel_after = self.psf_analytic.kernel_point_source
+        assert kernel_before.shape == kernel_after.shape
+        assert not np.allclose(kernel_before, kernel_after)
+
+    def test_fwhm(self):
+        fwhm = self.psf_analytic.fwhm
+        npt.assert_almost_equal(fwhm, 0.2, decimal=2)
+
+    def test_ao_psf_model(self):
+        kwargs_psf_analytic_init = {
+            "fwhm_core": 0.05,
+            "fwhm_halo": 0.3,
+            "strehl": 0.4,
+            "e1_halo": 0.05,
+            "e2_halo": -0.03,
+        }
+        psf = PSF(
+            psf_type="ANALYTIC",
+            psf_model=AO_PSF_MODEL,
+            kernel_num_pix=41,
+            pixel_size=0.03,
+            kwargs_psf_analytic_init=kwargs_psf_analytic_init,
+        )
+        kernel = psf.kernel_point_source
+        assert kernel.shape == (41, 41)
+        npt.assert_almost_equal(np.sum(kernel), 1, decimal=6)
+        # peak should be at the center (point source is centered by default)
+        center_index = 20 * 41 + 20
+        assert np.argmax(kernel) == center_index
+
+
+class TestAnalyticPSFRaise(unittest.TestCase):
+    def test_raise(self):
+        psf_model = AnalyticPSFModel(
+            function=kernel_util.kernel_gaussian,
+            param_names=["fwhm"],
+            lower_limit_default={"fwhm": 0.01},
+            upper_limit_default={"fwhm": 1.0},
+        )
+        with self.assertRaises(ValueError):
+            PSF(psf_type="ANALYTIC")
+        with self.assertRaises(ValueError):
+            PSF(psf_type="ANALYTIC", psf_model=psf_model)
+        with self.assertRaises(ValueError):
+            PSF(psf_type="ANALYTIC", psf_model=psf_model, kernel_num_pix=21)
 
 
 class TestRaise(unittest.TestCase):

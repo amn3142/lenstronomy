@@ -15,6 +15,8 @@ class PSF(object):
     sources).
     """
 
+    analytic_param_names = None
+
     def __init__(
         self,
         psf_type="NONE",
@@ -26,10 +28,13 @@ class PSF(object):
         point_source_supersampling_factor=1,
         kernel_point_source_init=None,
         kernel_point_source_normalisation=True,
+        psf_model=None,
+        kernel_num_pix=None,
+        kwargs_psf_analytic_init=None,
     ):
         """
 
-        :param psf_type: string, type of PSF: options are 'NONE', 'PIXEL', 'GAUSSIAN'
+        :param psf_type: string, type of PSF: options are 'NONE', 'PIXEL', 'GAUSSIAN', 'ANALYTIC'
         :param fwhm: float, full width at half maximum, only required for 'GAUSSIAN' model
         :param truncation: float, Gaussian truncation (in units of sigma), only required for 'GAUSSIAN' model
         :param pixel_size: width of pixel (required for Gaussian model, not required when using in combination with
@@ -46,6 +51,12 @@ class PSF(object):
         :param kernel_point_source_init: memory of an initial point source kernel that gets passed through the psf
          iteration
         :param kernel_point_source_normalisation: boolean, if False, the pixel PSF will not be normalized automatically.
+        :param psf_model: instance of a lenstronomy.Data.psf_analytic_model.AnalyticPSFModel (or duck-typed
+         equivalent exposing .function(num_pix, delta_pix, **kwargs) and .param_names), only required for 'ANALYTIC'
+         model
+        :param kernel_num_pix: int, odd, fixed pixel size of the rendered kernel, only required for 'ANALYTIC' model
+        :param kwargs_psf_analytic_init: dict, name -> value for each name in psf_model.param_names, only required
+         for 'ANALYTIC' model
         """
         self.psf_type = psf_type
         self._pixel_size = pixel_size
@@ -102,6 +113,17 @@ class PSF(object):
         elif self.psf_type == "NONE":
             self._kernel_point_source = np.zeros((3, 3))
             self._kernel_point_source[1, 1] = 1
+        elif self.psf_type == "ANALYTIC":
+            if psf_model is None or kernel_num_pix is None or kwargs_psf_analytic_init is None:
+                raise ValueError(
+                    "psf_model, kernel_num_pix, and kwargs_psf_analytic_init must all be "
+                    "set for ANALYTIC psf type!"
+                )
+            self.psf_model = psf_model
+            self.analytic_param_names = list(psf_model.param_names)
+            self._kernel_num_pix = int(kernel_num_pix)
+            self._kwargs_psf_analytic = dict(kwargs_psf_analytic_init)
+            self._point_source_supersampling_factor = 0
         else:
             raise ValueError("psf_type %s not supported!" % self.psf_type)
         if psf_variance_map is not None:
@@ -142,6 +164,17 @@ class PSF(object):
                 self._kernel_point_source = kernel_util.kernel_gaussian(
                     kernel_num_pix, self._pixel_size, self._fwhm
                 )
+            elif self.psf_type == "ANALYTIC":
+                kernel = self.psf_model.function(
+                    self._kernel_num_pix, self._pixel_size, **self._kwargs_psf_analytic
+                )
+                kernel = np.array(kernel)
+                if np.min(kernel) < 0:
+                    warnings.warn(
+                        "Analytic PSF kernel has at least one negative element, which is "
+                        "unphysical except for a PSF of an interferometric array."
+                    )
+                self._kernel_point_source = kernel / np.sum(kernel)
         return self._kernel_point_source
 
     @property
@@ -230,6 +263,17 @@ class PSF(object):
 
         elif self.psf_type == "NONE":
             kernel_point_source_supersampled = self._kernel_point_source
+        elif self.psf_type == "ANALYTIC":
+            n_super = self._kernel_num_pix * supersampling_factor
+            if n_super % 2 == 0:
+                n_super -= 1
+            kernel_point_source_supersampled = self.psf_model.function(
+                n_super,
+                self._pixel_size / supersampling_factor,
+                **self._kwargs_psf_analytic
+            )
+            kernel_point_source_supersampled = np.array(kernel_point_source_supersampled)
+            kernel_point_source_supersampled /= np.sum(kernel_point_source_supersampled)
         else:
             raise ValueError("psf_type %s not valid!" % self.psf_type)
         if updata_cache is True:
@@ -244,7 +288,7 @@ class PSF(object):
         :return: None
         """
         self._pixel_size = delta_pix
-        if self.psf_type == "GAUSSIAN":
+        if self.psf_type in ("GAUSSIAN", "ANALYTIC"):
             try:
                 del self._kernel_point_source
             except:

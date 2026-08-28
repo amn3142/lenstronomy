@@ -3,6 +3,8 @@ import lenstronomy.Util.util as util
 import lenstronomy.Util.image_util as image_util
 import lenstronomy.Util.kernel_util as kernel_util
 import lenstronomy.Util.mask_util as mask_util
+from lenstronomy.Sampling.Pool.pool import choose_pool
+from lenstronomy.Sampling.Samplers.pso import ParticleSwarmOptimizer
 
 import numpy as np
 import copy
@@ -99,18 +101,25 @@ class PsfFitting(object):
         :return: keyword argument of PSF constructor for PSF() class with updated PSF
         """
         self._image_model_class.PointSource.set_save_cache(True)
-        if "kernel_point_source_init" not in kwargs_psf:
-            kernel_point_source_init = copy.deepcopy(kwargs_psf["kernel_point_source"])
+        psf_class = PSF(**kwargs_psf)
+        is_analytic = psf_class.psf_type == "ANALYTIC"
+        if is_analytic:
+            # psf_variance_map / kernel_point_source_init are PIXEL-kernel-specific
+            # memory fields, not meaningful for an ANALYTIC psf_type.
+            kernel_point_source_init = None
+            error_map_final = None
         else:
-            kernel_point_source_init = kwargs_psf["kernel_point_source_init"]
+            if "kernel_point_source_init" not in kwargs_psf:
+                kernel_point_source_init = copy.deepcopy(kwargs_psf["kernel_point_source"])
+            else:
+                kernel_point_source_init = kwargs_psf["kernel_point_source_init"]
+            if "psf_variance_map" in kwargs_psf:
+                error_map_final = kwargs_psf["psf_variance_map"]
+            else:
+                error_map_final = np.zeros_like(kernel_point_source_init)
+        error_map_init = copy.deepcopy(error_map_final)
         kwargs_psf_new = copy.deepcopy(kwargs_psf)
         kwargs_psf_final = copy.deepcopy(kwargs_psf)
-        if "psf_variance_map" in kwargs_psf:
-            error_map_final = kwargs_psf["psf_variance_map"]
-        else:
-            error_map_final = np.zeros_like(kernel_point_source_init)
-        error_map_init = copy.deepcopy(error_map_final)
-        psf_class = PSF(**kwargs_psf)
         self._image_model_class.update_psf(psf_class)
         _kwargs_params = copy.deepcopy(kwargs_params)
         _kwargs_params.pop("kwargs_tracer_source", None)
@@ -151,11 +160,12 @@ class PsfFitting(object):
                 "log likelihood before: %s and log likelihood after: %s"
                 % (logL_before, logL_best)
             )
-        if keep_psf_variance_map is True:
-            kwargs_psf_final["psf_variance_map"] = error_map_init
-        else:
-            kwargs_psf_final["psf_variance_map"] = error_map_final
-        kwargs_psf_final["kernel_point_source_init"] = kernel_point_source_init
+        if not is_analytic:
+            if keep_psf_variance_map is True:
+                kwargs_psf_final["psf_variance_map"] = error_map_init
+            else:
+                kwargs_psf_final["psf_variance_map"] = error_map_final
+            kwargs_psf_final["kernel_point_source_init"] = kernel_point_source_init
         return kwargs_psf_final
 
     def update_psf(
@@ -174,6 +184,7 @@ class PsfFitting(object):
         use_starred=False,
         kwargs_starred=None,
         mask_starred=None,
+        kwargs_psf_pso=None,
     ):
         """
 
@@ -217,12 +228,20 @@ class PsfFitting(object):
          For supersampled PSFs, the original (pre-supersampling) size should be used.
          Each mask is applied to exclude contamination from other point sources when estimating the PSF,
          ensuring that each PSF kernel is reconstructed using only its corresponding source, respectively.
+        :param kwargs_psf_pso: dictionary, keyword arguments for the particle swarm optimization used to fit an
+         ANALYTIC PSF's shape parameters (ignored for PIXEL PSFs). Options: 'n_particles', 'n_iterations',
+         'threadCount', 'mpi', 'kwargs_lower', 'kwargs_upper' (per-name override of the psf_model's default bounds),
+         'verbose'. Example: kwargs_psf_pso = {'n_particles': 30, 'n_iterations': 100}
 
         :return: kwargs_psf_new, logL_after, error_map
         """
+        psf_class = PSF(**kwargs_psf)
+        if psf_class.psf_type == "ANALYTIC":
+            return self._update_psf_analytic(
+                kwargs_psf, kwargs_params, **(kwargs_psf_pso or {})
+            )
         if block_center_neighbour_error_map is None:
             block_center_neighbour_error_map = block_center_neighbour
-        psf_class = PSF(**kwargs_psf)
         kwargs_psf_copy = copy.deepcopy(kwargs_psf)
 
         point_source_supersampling_factor = kwargs_psf_copy.get(
@@ -485,6 +504,96 @@ class PsfFitting(object):
         logL_after, _ = self._image_model_class.likelihood_data_given_model(
             **kwargs_params
         )
+        return kwargs_psf_new, logL_after, error_map
+
+    def _update_psf_analytic(
+        self,
+        kwargs_psf,
+        kwargs_params,
+        n_particles=10,
+        n_iterations=10,
+        threadCount=1,
+        mpi=False,
+        kwargs_lower=None,
+        kwargs_upper=None,
+        verbose=True,
+    ):
+        """Fits an ANALYTIC PSF's shape parameters via a standalone particle swarm
+        optimization, holding all other model parameters (given in kwargs_params) fixed
+        at their current values. Mirrors Workflow.flux_calibration.FluxCalibration's use
+        of ParticleSwarmOptimizer.
+
+        :param kwargs_psf: keyword arguments used to construct the PSF() class; must
+            have psf_type == "ANALYTIC" and contain 'psf_model', 'kernel_num_pix', and
+            'kwargs_psf_analytic_init'
+        :param kwargs_params: keyword arguments of the (fixed) parameters of the model
+            components (e.g. 'kwargs_lens' etc)
+        :param n_particles: number of particles in the PSO
+        :param n_iterations: number of iterations of the PSO
+        :param threadCount: number of threads
+        :param mpi: boolean, MPI mode
+        :param kwargs_lower: dict, optional per-name override of
+            psf_model.lower_limit_default
+        :param kwargs_upper: dict, optional per-name override of
+            psf_model.upper_limit_default
+        :param verbose: bool, if True prints PSO progress
+        :return: kwargs_psf_new, logL_after, error_map
+        """
+        psf_model = kwargs_psf["psf_model"]
+        kernel_num_pix = kwargs_psf["kernel_num_pix"]
+        param_names = list(psf_model.param_names)
+        kwargs_lower = kwargs_lower or {}
+        kwargs_upper = kwargs_upper or {}
+        lower_limit = [
+            kwargs_lower.get(name, psf_model.lower_limit_default[name])
+            for name in param_names
+        ]
+        upper_limit = [
+            kwargs_upper.get(name, psf_model.upper_limit_default[name])
+            for name in param_names
+        ]
+        pixel_size = self._image_model_class.Data.pixel_width
+
+        _kwargs_params = copy.deepcopy(kwargs_params)
+        _kwargs_params.pop("kwargs_tracer_source", None)
+
+        def _logL(args):
+            kwargs_psf_analytic = dict(zip(param_names, args))
+            trial_psf = PSF(
+                psf_type="ANALYTIC",
+                psf_model=psf_model,
+                kernel_num_pix=kernel_num_pix,
+                pixel_size=pixel_size,
+                kwargs_psf_analytic_init=kwargs_psf_analytic,
+            )
+            self._image_model_class.update_psf(trial_psf)
+            logL, _ = self._image_model_class.likelihood_data_given_model(
+                **_kwargs_params
+            )
+            return logL
+
+        kwargs_psf_analytic_init = kwargs_psf.get("kwargs_psf_analytic_init", {})
+        init_pos = [
+            kwargs_psf_analytic_init.get(name, (lo + hi) / 2.0)
+            for name, lo, hi in zip(param_names, lower_limit, upper_limit)
+        ]
+
+        pool = choose_pool(mpi=mpi, processes=threadCount)
+        pso = ParticleSwarmOptimizer(
+            _logL, lower_limit, upper_limit, n_particles, pool=pool
+        )
+        pso.set_global_best(init_pos, [0] * len(init_pos), _logL(init_pos))
+        result, _ = pso.optimize(n_iterations, verbose=verbose)
+
+        kwargs_psf_analytic_best = dict(zip(param_names, result))
+        kwargs_psf_new = {
+            "psf_type": "ANALYTIC",
+            "psf_model": psf_model,
+            "kernel_num_pix": kernel_num_pix,
+            "kwargs_psf_analytic_init": kwargs_psf_analytic_best,
+        }
+        logL_after = _logL(result)
+        error_map = np.zeros((kernel_num_pix, kernel_num_pix))
         return kwargs_psf_new, logL_after, error_map
 
     def image_single_point_source(self, image_model_class, kwargs_params):
